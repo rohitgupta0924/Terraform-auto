@@ -1,0 +1,114 @@
+name: Terraform Plan and apply
+
+on: 
+  workflow_dispatch:
+    inputs:
+      deployment_env:
+        type: choice
+        description: 'Choose where to Create/update infra: Dev, UAT or Prod'
+        required: true
+        options: 
+        - dev
+        - uat
+
+jobs:
+  plan:
+    runs-on: 
+      group: a2e-lin-runner-grp
+      labels: [a2e-linuxrunner]
+    environment: ${{ github.event.inputs.deployment_env }}
+    env:
+      ARM_ACCESS_KEY: ${{ secrets.STATEFILE_STG_ACCOUNT_KEY }}
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        path: 'iac'
+
+    - name: Azure Login and set Subscription
+      run: |
+        az login --identity -u ${{ secrets.SUBS_MUID }} -o none
+        az account list --output table
+        echo "ARM_SUBSCRIPTION_ID=$(az account show --query id --output tsv)" >> $GITHUB_ENV
+
+    - name: Terraform init
+      id: tfinit
+      working-directory: ${{ github.workspace }}/iac/invocation
+      env:
+        TERM : "xterm-256color"
+      run: |
+       sed -i "s/envspecific/${{ github.event.inputs.deployment_env }}/g" backend.conf
+       terraform init -backend-config="backend.conf"
+
+    - name: Terraform validate
+      id: tfvalidate
+      working-directory: ${{ github.workspace }}/iac/invocation
+      env:
+        TERM : "xterm-256color"           
+      run: terraform validate
+
+    - name: Terraform Plan
+      id: tfplan
+      working-directory: ${{ github.workspace }}/iac/invocation
+      env:
+        TF_VAR_env : ${{ github.event.inputs.deployment_env }}
+      run: |
+        set +e
+        terraform plan -detailed-exitcode -no-color -out tfplan > /dev/null
+        export exitcode=$?
+        echo "exit code is : $exitcode"
+        if [ $exitcode -eq 0 ]; then
+          echo "No changes detected in the Terraform plan."
+        elif [ $exitcode -eq 2 ]; then
+          export TERM="xterm-256color"
+          echo "There are pending changes....."
+          terraform plan | grep -v "Refreshing state...\|Reading...\|Read complete after"
+        else
+          echo "Terraform plan failed."
+          exit 1
+        fi
+
+    - name: Publish Terraform Plan
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfplan
+        path: ${{ github.workspace }}/iac/invocation/tfplan
+
+
+  apply:
+    needs: plan
+    runs-on: 
+      group: a2e-lin-runner-grp
+      labels: [a2e-linuxrunner]
+    environment: ${{ github.event.inputs.deployment_env }}
+    env:
+      ARM_ACCESS_KEY: ${{ secrets.STATEFILE_STG_ACCOUNT_KEY }}
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        path: 'iac'
+
+    - name: Azure Login and set Subscription
+      run: |
+        az login --identity -u ${{ secrets.SUBS_MUID }} -o none
+        az account list --output table
+        echo "ARM_SUBSCRIPTION_ID=$(az account show --query id --output tsv)" >> $GITHUB_ENV
+
+    - name: 'Terraform init'
+      id: tfinit
+      working-directory: ${{ github.workspace }}/iac/invocation
+      run: | 
+        sed -i "s/envspecific/${{ github.event.inputs.deployment_env }}/g" backend.conf
+        terraform init -backend-config="backend.conf"
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v3
+      with:
+        name: tfplan
+        path: ${{ github.workspace }}/iac/invocation
+
+    - name: 'Terraform apply'
+      id: tfapply
+      working-directory: ${{ github.workspace }}/iac/invocation
+      run: terraform apply -auto-approve tfplan

@@ -1,0 +1,232 @@
+#SSH into the newly created vm
+#Ensure the runner group is created in the organization
+#Replace ghp_xxxxxxx with right value for pat
+#Commands to run:
+#sudo apt-get update && sudo apt-get install ansible jq jid tree gnupg software-properties-common apt-transport-https ca-certificates curl lsb-release -y
+#sudo ansible-playbook -e "server_url=github.schneider-electric.com" -e "org=A2E-NewGen" -e "sysuser=azureuser" -e "gh_token=$gh_token" -e "runner_group_name=a2e-lin-runner-grp" -e "runner_wd=a2e_work" -e "runner_label=a2e-linuxrunner" playbook.yml
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+  - name: Update APT package manager repositories
+    apt:
+      update_cache: yes
+
+  - name: Check if terraform is installed
+    shell:
+      cmd: terraform -version
+    register: terraform_version
+    ignore_errors: true
+  - block:
+    - name: If terraform not installed - Dearmor HashiCorp GPG key
+      shell:
+        cmd: wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor |  tee /usr/share/keyrings/hashicorp-archive-keyring.gpg > /dev/null
+    - name: If terraform not installed - Get Ubuntu release
+      shell:
+        cmd: lsb_release -cs
+      register: ubuntu_release
+    - name: If terraform not installed - Add HashiCorp repository to sources list
+      lineinfile:
+        path: /etc/apt/sources.list.d/hashicorp.list
+        line: "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ubuntu_release.stdout }} main"
+        create: yes
+    - name: If terraform not installed - Update APT package manager repositories
+      apt:
+        update_cache: yes
+    - name: If terraform not installed - Install Terraform
+      apt:
+        name: terraform
+        state: present
+    when: terraform_version.failed
+
+  - name: Check if azure cli is installed
+    shell:
+      cmd: az --version
+    register: az_version
+    ignore_errors: true
+  - block:
+    - name: If azcli not installed - Check for keyrings dir, create if not present
+      file:
+        path: "/etc/apt/keyrings"
+        state: directory
+    - name: If azcli not installed - Get the keys
+      shell:
+        cmd: | 
+          curl -sLS https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor | sudo tee /etc/apt/keyrings/microsoft.gpg > /dev/null
+          chmod go+r /etc/apt/keyrings/microsoft.gpg
+    - name: If azcli not installed - Capture lsb_release
+      shell: lsb_release -cs
+      register: az_dist
+    - name: If azcli not installed - Capture Architecture
+      shell: dpkg --print-architecture
+      register: arch  
+    - name: If azcli not installed - Updates sources
+      copy:
+        content: |
+          Types: deb
+          URIs: https://packages.microsoft.com/repos/azure-cli/
+          Suites: {{ az_dist.stdout }}
+          Components: main
+          Architectures: {{ arch.stdout }}
+          Signed-by: /etc/apt/keyrings/microsoft.gpg
+        dest: /etc/apt/sources.list.d/azure-cli.sources
+    - name:  If azcli not installed - install
+      apt:
+        name: azure-cli
+        state: present
+    when: az_version.failed
+
+  - name: Check if powershell is installed
+    shell:
+      cmd: pwsh --version
+    register: pwsh_version
+    ignore_errors: true
+  - block:
+    - name: If powershell not installed - Get Ubuntu version
+      shell:
+        cmd: lsb_release -r | cut -f2
+      register: ubuntu_version
+    - name: If powershell not installed - Install powershell
+      shell: |
+        wget -q https://packages.microsoft.com/config/ubuntu/{{ ubuntu_version.stdout }}/packages-microsoft-prod.deb
+        dpkg -i packages-microsoft-prod.deb
+        rm packages-microsoft-prod.deb
+    - name: If powershell not installed - Update APT package manager repositories
+      apt:
+        update_cache: yes
+    - name: If powershell not installed - Install powershell
+      apt:
+        name: powershell
+        state: present
+    when: pwsh_version.failed
+
+  #https://alexanderzeitler.com/articles/fixing-my-bricked-dotnet-sdk-6-installation-on-xubuntu-ubuntu-after-dotnet-7-sdk-installation/
+  #https://learn.microsoft.com/en-us/dotnet/core/install/linux-scripted-manual
+  - name: Check if dotnet is installed
+    shell:
+      cmd: dotnet --info
+    register: dotnet_info
+    ignore_errors: true
+  - block: 
+    - name: If dotnet not installed - Ensure dotnet-* aspnetcore-* netstandard-* are pinned to packages.microsoft.com
+      copy:
+        dest: /etc/apt/preferences
+        content: |
+          Package: dotnet-* aspnetcore-* netstandard-*
+          Pin: origin "packages.microsoft.com"
+          Pin-Priority: 999    
+    - name: If dotnet not installed - Update APT package manager repositories
+      apt:
+        update_cache: yes
+    - name: If dotnet not installed - Install dotnet using apt
+      apt:
+        name: 
+        - dotnet-sdk-8.0
+        state: present
+    when: dotnet_info.failed
+
+  - name: gather home dir for "{{ sysuser }}"
+    user:
+      name: "{{ sysuser }}"
+    register: user_info
+
+  - name: Install nvm
+    become_user: "{{ sysuser }}"
+    shell: >
+      curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    args:
+      creates: "{{ user_info.home }}/.nvm/nvm.sh"
+    become: true
+
+  - name: gather home dir for "{{ sysuser }}"
+    user:
+      name: "{{ sysuser }}"
+    register: user_info
+
+  - name: Check if ghaction folder is present to confirm whether runner is configured
+    become_user: "{{ sysuser }}"
+    stat:
+      path: "{{ user_info.home }}/actions-runner"
+    register: runner_dir_present
+  - block:     
+    - name: If runner is not configured - Create runner dir
+      file:
+        path: "{{ user_info.home }}/actions-runner"
+        state: directory
+    - name: If runner is not configured - Find the hostname
+      shell:
+        cmd: hostname -f
+      register: hostname_info
+    - name: If runner is not configured - Get registration token for the config script
+      uri:
+        url: "https://api.{{ server_url }}/orgs/{{ org }}/actions/runners/registration-token"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ gh_token }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        return_content: yes
+        status_code: 201
+      register: registration_token_raw
+    - name: If runner is not configured - Get binary downloading token for the gha tar
+      uri:
+        url: "https://api.{{ server_url }}/orgs/{{ org }}/actions/runners/downloads"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ gh_token }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        return_content: yes
+        status_code: 200
+      register: jwt_gh_tar
+    - name: If runner is not configured - Extract details fox linux x64
+      set_fact:
+        download_details: "{{ item }}"
+      when: item.architecture == 'x64' and item.os == 'linux'
+      with_items: "{{ jwt_gh_tar.json }}"
+      no_log: true
+    - name: If runner is not configured - Download the binary.
+      get_url:
+        url: "{{ download_details.download_url }}"
+        dest: "~/actions-runner/{{ download_details.filename }}"
+        headers:
+          Authorization: "Bearer {{ download_details.temp_download_token }}"
+          Accept: "application/vnd.github+json"
+    - name: If runner is not configured - Get the SHA256 checksum of the downloaded file
+      stat:
+        path: "~/actions-runner/{{ download_details.filename }}"
+        checksum_algorithm: sha256
+        get_checksum: yes
+      register: file_stats
+    - name: If runner is not configured - Fail the play if the checksum mismatch
+      fail:
+        msg: "Failure, file is not correct."
+      when: file_stats.stat.checksum != download_details.sha256_checksum
+    - name: If runner is not configured - Extract tar file
+      shell:
+        cmd: "tar xzf {{ download_details.filename }}"
+      args:
+        chdir: "~/actions-runner"
+    - name: If runner is not configured - Run the config script
+      shell: |
+        ./config.sh --url https://{{ server_url }}/{{ org }} \
+        --token {{ registration_token_raw.json.token }} \
+        --unattended --name {{ hostname_info.stdout }} \
+        --no-default-labels \
+        --labels {{ runner_label }}, {{ hostname_info.stdout }} \
+        --work {{ runner_wd }} \
+        --runnergroup {{ runner_group_name }}
+      args:
+        chdir: "{{ user_info.home }}/actions-runner"
+    when: not runner_dir_present.stat.exists
+    become: true
+    become_user: "{{ sysuser }}"
+  - name: If runner is not configured - Instantiate runner as a service
+    when: not runner_dir_present.stat.exists
+    shell: |
+      ./svc.sh install
+      ./svc.sh start
+      ./svc.sh enable
+    args:
+      chdir: "{{ user_info.home }}/actions-runner"

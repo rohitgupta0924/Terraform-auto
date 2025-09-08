@@ -1,0 +1,127 @@
+name: Deploy --> Azure webapps, APIApps
+
+on: 
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        description: 'Choose where to Deploy Dev, UAT or Prod'
+        required: true
+        options: 
+          - dev
+          - uat
+          - prod
+      component:
+        type: choice
+        description: 'Choose the component to deploy (frontend, backend, functionapp, all)'
+        required: true
+        options:
+          - frontend
+          - backend
+          - all
+        default: 'all'
+      frontend_ref:
+        type: string
+        description: 'Branch or tag to checkout for frontend'
+        required: false
+        default: 'main'
+      backend_ref:
+        type: string
+        description: 'Branch or tag to checkout for backend'
+        required: false
+        default: 'main'
+
+jobs:
+  deploy:
+    name: Build and Deploy of Assets to Azure | Azure Deployment Environment --> ${{ github.event.inputs.environment }} 
+    environment: ${{ github.event.inputs.environment }}
+    runs-on: 
+      group: a2e-lin-runner-grp
+      labels: [a2e-linuxrunner]
+    steps:
+      # - name: Echo Workflow job summary
+      #   run: |
+      #     SUMMARY=$'## Workflow Summary\n'
+      #     SUMMARY+=$'**Environment:** ${{ github.event.inputs.environment }}\n'
+      #     SUMMARY+=$'**Component:** ${{ github.event.inputs.component }}\n'
+      #     if [[ "${{ github.event.inputs.component }}" == "frontend" || "${{ github.event.inputs.component }}" == "all" ]]; then
+      #       SUMMARY+=$'**Frontend Ref:** ${{ github.event.inputs.frontend_ref }}\n'
+      #     fi
+      #     if [[ "${{ github.event.inputs.component }}" == "backend" || "${{ github.event.inputs.component }}" == "all" ]]; then
+      #       SUMMARY+=$'**Backend Ref:** ${{ github.event.inputs.backend_ref }}\n'
+      #     fi
+      #     echo "$SUMMARY" >> $GITHUB_STEP_SUMMARY
+
+      # - name: Azure Login and set Subscription
+      #   run: |
+      #     az login --identity -u ${{ secrets.SUBS_MUID }} -o none
+      #     az account list --output table
+
+
+      - name: Frontend - Checkout
+        if: ${{ inputs.component == 'frontend' || inputs.component == 'all' }}
+        uses: actions/checkout@v3
+        with:
+          repository: A2E-NewGen/SE.A2E.NewGen.Web
+          token: ${{ secrets.CLONE_TOKEN }}
+          path: frontend
+          ref: ${{ inputs.frontend_ref }}
+      # - name: Frontend - NPM Build
+      #   if: ${{ inputs.component == 'frontend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/frontend
+      #   env:
+      #     CI: false #https://stackoverflow.com/questions/63445967/githubs-action-is-not-building-react-application
+      #   run: |
+      #     export PATH="/home/azureuser/.nvm/versions/node/v20.18.0/bin:/home/azureuser/.nvm/versions/node/v20.18.0/bin:$PATH" 
+      #     npm install 
+      #     npm run build
+      # - name: Frontend - Compress the build results
+      #   if: ${{ inputs.component == 'frontend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/frontend
+      #   shell: pwsh
+      #   run: Compress-Archive -Path "build/*" -DestinationPath "frontend-build.zip"
+      # - name: Frontend - Upload Artifact to GitHub
+      #   if: ${{ inputs.component == 'frontend' || inputs.component == 'all' }}
+      #   uses: actions/upload-artifact@v3.1.2
+      #   with:
+      #     name: frontend-build-${{ github.run_id }}
+      #     path: ${{ github.workspace }}/frontend/frontend-build.zip
+      #     retention-days: 1   
+      # - name: Frontend - Deploy Build Content to Azure WebApp
+      #   if: ${{ inputs.component == 'frontend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/frontend
+      #   run: |
+      #     /usr/bin/az webapp deploy --resource-group "rg-newgen-${{ github.event.inputs.environment }}-01" --name "wap-newgen-fe-${{ github.event.inputs.environment }}-01" --src-path "${{ github.workspace }}/frontend/frontend-build.zip" --type zip --clean true
+
+
+      - name: Backend - Checkout
+        if: ${{ inputs.component == 'backend' || inputs.component == 'all' }}
+        uses: actions/checkout@v3
+        with:
+          repository: A2E-NewGen/SE.A2E.NewGen.API
+          token: ${{ secrets.CLONE_TOKEN }}
+          path: backend
+          ref: ${{ inputs.backend_ref }}
+      # - name: Backend - Dotnet build and publish the result 
+      #   if: ${{ inputs.component == 'backend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/backend/SE.A2E.NewGen.API
+      #   run: |
+      #     dotnet build *.csproj -c Release
+      #     dotnet publish *.csproj -c Release -o "pubout"
+      # - name: Backend - Compress the build results
+      #   if: ${{ inputs.component == 'backend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/backend/SE.A2E.NewGen.API
+      #   shell: pwsh
+      #   run: Compress-Archive -Path "pubout/*" -DestinationPath "backend-build.zip"
+      # - name: Backend - Upload Artifact to GitHub
+      #   if: ${{ inputs.component == 'backend' || inputs.component == 'all' }}
+      #   uses: actions/upload-artifact@v3.1.2
+      #   with:
+      #     name: backend-build-${{ github.run_id }}
+      #     path: ${{ github.workspace }}/backend/SE.A2E.NewGen.API/backend-build.zip
+      #     retention-days: 1           
+      # - name: Backend - Deploy Build Content to Azure WebApp
+      #   if: ${{ inputs.component == 'backend' || inputs.component == 'all' }}
+      #   working-directory: ${{ github.workspace }}/backend/SE.A2E.NewGen.API
+      #   run: |
+      #     /usr/bin/az webapp deploy --resource-group "rg-newgen-${{ github.event.inputs.environment }}-01" --name "apiapp-newgen-be-api-${{ github.event.inputs.environment }}-01" --src-path "${{ github.workspace }}/backend/SE.A2E.NewGen.API/backend-build.zip" --type zip --clean true
